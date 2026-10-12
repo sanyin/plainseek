@@ -92,15 +92,26 @@ PNG 逐块 CRC32、ZIP 条目 CRC、JPEG 段结构与 Huffman 表合法性、gzi
 ## 二、安装与依赖
 
 * Python 3.8+（实测 3.13）
-* 必需：无（只用标准库也能跑基础功能）
-* 建议：
-  * `pycryptodome` —— DES / 3DES / AES / ChaCha20 / Salsa20
-  * `Pillow` —— 生成标准 JPEG 参考文件（用于比对 Huffman 表；没有它时跳过严格比对）
-  * `capstone` / `unicorn` —— 需要反汇编/模拟执行机器码时另配
+* **一条命令装齐**：
 
 ```bash
-pip install pycryptodome pillow
+pip install -r requirements.txt
 ```
+
+* 依赖说明（工具本身只用到这 6 个）：
+
+| 包 | 用途 | 不装会怎样 |
+|---|---|---|
+| `pycryptodome` | AES / DES / 3DES / RC4 / ChaCha20 / Salsa20 | 标准算法那条线不可用 |
+| `numpy` | 向量化扫描（熵、异或字符串解密、隐写位平面） | 相关命令会提示缺依赖 |
+| `Pillow` | 图片隐写（BMP 位平面、频谱图）、Huffman 表比对 | 图片相关功能跳过严格比对 |
+| `unicorn` | CPU 模拟执行（`emu` / `gui` / `crackme` 的动态分析） | 动态分析命令不可用 |
+| `capstone` | 反汇编（执行轨迹反汇编、指令长度判定） | 动态分析命令不可用 |
+| `keystone-engine` | 汇编（**仅自检**里现场拼测试样本） | `selftest` 的 PE 模拟执行那条会跳过 |
+
+* **只用标准库也能跑基础加解密功能**——上面这些是"用到才需要"的可选增强。
+* 测试脚本若需要私有样本，用环境变量指向样本根目录（`set AUTOCRYPT_DATA=D:\你的样本目录`），
+  缺样本时会打印一行原因并干净跳过，不会甩一堆 `FileNotFoundError`。
 
 目录结构：
 
