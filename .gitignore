@@ -1,0 +1,24 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# ---- 运行产物（工具的输出目录，不进仓库）----
+recovered/
+实测日志/
+*.lnk
+
+# ---- 本机临时/凭据相关（永远不要提交）----
+_cred*.txt
+*.pem
+*.key
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

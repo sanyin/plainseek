@@ -1,0 +1,14 @@
+# autocrypt 的核心依赖
+#
+# 安装：pip install -r requirements.txt
+#
+# 注：只有下面 6 个是工具本身用到的（`grep` 确认过引用次数）。
+# 引擎相关的三个（unicorn / capstone / keystone-engine）是"模拟执行 + 反汇编 + 汇编测试样本"
+# 用的，缺了也能跑纯加解密那部分，只是 `emu`/`gui`/`crackme` 这些命令会提示缺少依赖。
+
+unicorn>=2.0.0          # CPU 模拟执行（emu / gui / crackme 的动态分析）
+capstone>=5.0.0         # 反汇编（按真实执行边界反汇编、指令长度判定都靠它）
+keystone-engine>=0.9.2  # 汇编（仅自检里用来现场拼测试样本）
+pycryptodome>=3.18.0    # AES/DES/RC4 等（Crypto.*）
+numpy>=1.24.0           # 向量化扫描（熵、异或字符串解密等）
+pillow>=9.5.0           # 图片隐写（BMP 位平面、频谱图导出）
