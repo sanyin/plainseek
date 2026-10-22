@@ -4,7 +4,7 @@
 只会看到一堆 ``FileNotFoundError`` 而不知道原因。这里做三件事：
 
 1. :func:`ensure_repo_on_path` —— 由 ``__file__`` 推出仓库根目录并加进 ``sys.path``，
-   任何人 clone 下来都能 ``from dkit import ...``；
+   任何人 clone 下来都能 ``from pseek import ...``；
 2. :func:`data_root` —— 私有样本目录优先读环境变量 ``AUTOCRYPT_DATA``，
    没设置就用"仓库的上一级目录"（本地开发的旧布局）；
 3. :func:`sample` —— 取样本；**不存在时抛 ``MissingSample`` 并给出人话原因**，
@@ -17,7 +17,7 @@
     from _paths import ensure_repo_on_path, sample
 
     ensure_repo_on_path()
-    from dkit import ciphers          # 现在可以正常 import
+    from pseek import ciphers          # 现在可以正常 import
 
     EXE = sample("待解题/100w_20260919162532.exe")
 """

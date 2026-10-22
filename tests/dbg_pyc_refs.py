@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _paths import ensure_repo_on_path, sample      # noqa: E402
 
 ensure_repo_on_path()
-from dkit import pyc                                # noqa: E402
+from pseek import pyc                                # noqa: E402
 
 blob = sample("_投稿测试/R10_pyc/check.pyc").read_bytes()
 

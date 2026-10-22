@@ -5,7 +5,7 @@ import sys
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dkit import carve, crack
+from pseek import carve, crack
 
 ENGLISH = (b"It was a bright cold day in April, and the clocks were striking thirteen. "
            b"Winston Smith, his chin nuzzled into his breast in an effort to escape the "

@@ -5,7 +5,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dkit import oracles
+from pseek import oracles
 from PIL import Image
 
 buf = io.BytesIO()

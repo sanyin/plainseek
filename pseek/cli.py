@@ -251,6 +251,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-ins", type=int, default=4000000)
     s.set_defaults(func=cmd_unpack)
 
+    s = sub.add_parser("triage", help="逆向题指路：侦察 + 排序好的下一步命令（只给线索，不造答案）")
+    s.add_argument("file", help="样本文件；写 - 表示从 stdin 读")
+    s.add_argument("--json", action="store_true", help="结构化输出")
+    s.set_defaults(func=cmd_triage)
+
     s = sub.add_parser("crackme", help="CrackMe 辅助：静态定位比较点/输入点 + 可选模拟执行")
     s.add_argument("file")
     s.add_argument("--run", action="store_true", help="顺便把程序模拟执行跑一遍")
@@ -1019,6 +1024,26 @@ def _read_blob(path: str) -> bytes:
         return fh.read()
 
 
+def cmd_triage(args) -> int:
+    """逆向题指路：侦察一遍，给出排好序的下一步命令。"""
+    from . import triage as _triage
+    try:
+        info = _triage.triage_path(args.file)
+    except OSError as exc:
+        # 实测常见：样本被杀软隔离/锁住。给一句人话，别甩 traceback。
+        print(f"读不了 {args.file}：{exc}")
+        print("  若文件还在但被占用，可以走管道：unrar p ... | python plainseek.py triage -")
+        return 2
+    if getattr(args, "json", False):
+        import json
+        payload = dict(info)
+        payload["next_steps"] = [{"command": c, "why": w} for c, w in info["next_steps"]]
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(_triage.format_report(info))
+    return 0
+
+
 def cmd_unpack(args) -> int:
     """UPX 自动脱壳（在内存里跑壳的 stub，dump 出平铺镜像）。"""
     from . import unpack as _unpack
@@ -1557,6 +1582,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "fragments": cmd_fragments, "auto": cmd_auto, "pyc": cmd_pyc,
         "formula": cmd_formula, "stego": cmd_stego, "emu": cmd_emu,
         "crackme": cmd_crackme, "sig": cmd_sig, "gui": cmd_gui, "unpack": cmd_unpack,
+        "triage": cmd_triage,
         "selftest": cmd_selftest,
     }[args.cmd]
     return handler(args)

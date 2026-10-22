@@ -11,7 +11,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dkit import ciphers, oracles, verify
+from pseek import ciphers, oracles, verify
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _paths import sample                            # noqa: E402
 
@@ -49,7 +49,7 @@ os.remove(tmp)
 
 print("=" * 74)
 print("[3] 候选密钥空间枚举 + 派生规则")
-from dkit.verify import Keyspace, keyspace_keys
+from pseek.verify import Keyspace, keyspace_keys
 pairs = list(keyspace_keys(Keyspace("digits", 3, "md5_hex")))
 expect = hashlib.md5(b"000").hexdigest().encode()
 print("   3 位数字 × md5_hex →", len(pairs), "个候选；首个:", pairs[0])

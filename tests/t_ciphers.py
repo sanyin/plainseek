@@ -4,7 +4,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dkit import ciphers
+from pseek import ciphers
 
 # ---------- 1. 改造 RC4：与题目 solve.py 的 crypt() 逐字节对照 ----------
 KEY = b"CCB_M4gic_K3y_2026"

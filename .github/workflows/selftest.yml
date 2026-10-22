@@ -1,0 +1,68 @@
+name: selftest
+
+# 目的只有一个：**每次提交都证明"核心能力没退化"**。
+# 这个项目有 61 条自检（含负样本：喂错误输入必须被判错），比任何"我加了个功能"的说法都可信。
+#
+# 说明：Windows 任务是**门槛**；Linux 任务先标成"探索性"（continue-on-error），
+# 因为工具的主战场是 Win32 模拟执行，Linux 上跑通 ELF 那部分是加分项而不是前提。
+# 等 Linux 连续几次绿了，把 continue-on-error 去掉即可。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest-windows:
+    name: selftest (windows, py${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+      - name: 自检（61 项，含负样本）
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python plainseek.py selftest
+
+  selftest-linux:
+    name: selftest (ubuntu, py${{ matrix.python }}) [探索性]
+    runs-on: ubuntu-latest
+    continue-on-error: true          # 见文件头说明：先观察，绿了再转正式门槛
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+      - name: 自检（61 项，含负样本）
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python plainseek.py selftest
+
+  packaging:
+    name: 入口可用（改名后老入口仍能用）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: 新入口
+        run: python plainseek.py --help
+      - name: 旧入口（兼容壳）应仍然可用
+        run: python autocrypt.py --help

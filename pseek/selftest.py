@@ -647,6 +647,135 @@ def test_pe_emu() -> None:
             f"候选 {[hex(a) for a, _w in gui.candidate_entries(img2)][:3]}")
 
 
+def test_crt_callbacks() -> None:
+    """C++ 题的命门：`_initterm` 要**真的去调用表里的函数**，`getc` 要真的读 stdin。
+
+    这两块以前是"静默不通"的：
+      * `_initterm` 只返回 0 → 静态构造器一个都不跑 → `std::cout`/locale 未初始化 → abort；
+      * `getc` 落到"未知 API 返回 0" → `std::cin` 读到无尽的 0 字节 → getc/ungetc 死循环。
+    所以这里造一个 PE：入口先调 `_initterm(表头, 表尾)`，两个初始化函数各写一个标记字节，
+    再调 `getc` 读一个字节。三件事都必须成立，否则说明回调机制或栈恢复又坏了。
+    """
+    print("\n[18] C++ CRT：_initterm 真的调用静态构造器 + getc 读 stdin")
+    from . import emu
+    try:
+        import keystone
+    except ImportError:                                   # pragma: no cover
+        _record("CRT 回调（需要 keystone 组装测试用 PE）", False, "未安装 keystone")
+        return
+    base = 0x140000000
+    table, flag1, flag2, flag3 = 0x200, 0x150, 0x151, 0x152
+    fn1, fn2 = 0x300, 0x340
+    iat = 0x2060
+    # ⚠ 别在 keystone 的汇编串里写 `; 注释(带括号)`：它的 x86 解析器会
+    #    把 `(start, end)` 当成操作数，报 "Invalid operand"。
+    asm = f"""
+        sub rsp, 0x28
+        mov rcx, {base + 0x1000 + table}
+        mov rdx, {base + 0x1000 + table + 0x10}
+        mov rax, {base + iat + 0}
+        call qword ptr [rax]
+        mov rax, {base + iat + 8}
+        call qword ptr [rax]
+        mov rcx, {base + 0x1000 + flag3}
+        mov byte ptr [rcx], al
+        xor eax, eax
+        add rsp, 0x28
+        ret
+    """
+    init1 = f"""
+        mov rax, {base + 0x1000 + flag1}
+        mov byte ptr [rax], 1
+        ret
+    """
+    init2 = f"""
+        mov rax, {base + 0x1000 + flag2}
+        mov byte ptr [rax], 2
+        ret
+    """
+    ks = keystone.Ks(keystone.KS_ARCH_X86, keystone.KS_MODE_64)
+    code, _ = ks.asm(asm)
+    c1, _ = ks.asm(init1)
+    c2, _ = ks.asm(init2)
+    text = bytearray(0x400)
+    text[0:len(code)] = code
+    # table/fn1/fn2 都是**节内偏移**（.text 的 RVA 是 0x1000，所以不用再减 0x1000）
+    text[fn1:fn1 + len(c1)] = bytes(c1)
+    text[fn2:fn2 + len(c2)] = bytes(c2)
+    import struct as _s
+    text[table:table + 8] = _s.pack("<Q", base + 0x1000 + fn1)
+    text[table + 8:table + 16] = _s.pack("<Q", base + 0x1000 + fn2)
+    text[table + 16:table + 24] = _s.pack("<Q", 0)
+    blob = _tiny_pe(bytes(text), {}, ["_initterm", "getc"])
+    img = emu.load_image(blob)
+    res = emu.run_function(img, base + 0x1000, max_ins=20000,
+                           stdin=b"a", snapshot=False)
+    # 标记字节是程序**写到内存里**的，要从模拟器的内存读，不能读文件字节
+    uc = res.get("_uc")
+    flags = bytes(uc.mem_read(base + 0x1000 + flag1, 3)) if uc else b""
+    _record("_initterm 真的调用了表里的两个静态构造器（且按顺序）",
+            flags[0] == 1 and flags[1] == 2,
+            f"标记字节={flags[:2].hex()}（应为 0102）；stop={res.get('stop')}")
+    _record("getc 从 stdin 读到了字节",
+            flags[2] == ord("a"), f"读到={flags[2]!r}（应为 97）")
+    _record("回调跑完后栈已恢复、入口正常返回",
+            "返回" in str(res.get("stop")), f"stop={res.get('stop')}")
+
+
+def test_triage() -> None:
+    """triage 是"指路层"：它不造答案，但必须给出**能直接复制执行**的下一步。"""
+    print("\n[19] triage：侦察 + 排序好的下一步（不造答案）")
+    from . import triage
+    info = triage.triage_blob(b"just some text, not a binary", "note.txt")
+    _record("triage：非二进制不崩，给 B 档 + scan 建议",
+            info["tier"] == "B" and any("scan" in c for c, _w in info["next_steps"]),
+            f"tier={info['tier']} steps={[c for c, _w in info['next_steps']][:2]}")
+    try:
+        import keystone
+    except ImportError:                                   # pragma: no cover
+        _record("triage：PE 样本（需要 keystone）", False, "未安装 keystone")
+        return
+    ks = keystone.Ks(keystone.KS_ARCH_X86, keystone.KS_MODE_64)
+    code, _ = ks.asm("xor eax, eax\nret")
+    strings = {"ok": (0x100, b"*** SUCCESS! ***\x00"),
+               "bad": (0x150, b"[!] Wrong password.\x00")}
+    blob = _tiny_pe(bytes(code), strings, ["puts"])
+    info2 = triage.triage_blob(blob, "demo.exe")
+    _record("triage：PE 样本识别出身份/运行时/输入口",
+            "PE" in str(info2["kind"]) and bool(info2["runtime"]) and bool(info2["input_channels"]),
+            f"{info2['kind']} | {info2['runtime'][:1]}")
+    # 档位判定单独测（纯函数、确定性）：四种关键输入各测一次。
+    # 不靠合成 PE 去撞"文案能不能被扫到"，那样测的是扫描器的节过滤，不是判定逻辑。
+    cases = [
+        ("C++ 无壳 + 有成败文案 → A",
+         {"runtime": ["MSVC C++ 运行库"], "packed": {"kind": None},
+          "verdict_strings": {"success": [1], "failure": [2]}}, "A"),
+        (".NET → B",
+         {"runtime": [".NET / IL（CLR 头 v2.5）"], "packed": {"kind": None},
+          "verdict_strings": {"success": [1], "failure": [2]}}, "B"),
+        ("UPX → B（先脱壳）",
+         {"runtime": ["MSVC C++"], "packed": {"kind": "upx"},
+          "verdict_strings": {"success": [1], "failure": [2]}}, "B"),
+        ("没有成败文案 → B",
+         {"runtime": ["原生"], "packed": {"kind": None},
+          "verdict_strings": {"success": [], "failure": []}}, "B"),
+        ("低置信度“可能加壳”不该降档 → A",
+         {"runtime": ["MSVC C++"], "packed": {"kind": "other", "name": "可能加壳", "confidence": "低"},
+          "verdict_strings": {"success": [1], "failure": [2]}}, "A"),
+    ]
+    bad = [(name, triage._tier(info)[0], want) for name, info, want in cases
+           if triage._tier(info)[0] != want]
+    _record("triage：档位判定（A/B）在五种关键输入上都正确", not bad,
+            f"不符：{bad}" if bad else f"{len(cases)} 例全对")
+    text = triage.format_report(info2)
+    _record("triage：报告里能同时看到档位与下一步",
+            "档" in text and "下一步" in text, "")
+    _record("triage：带空格的路径会被引号包住（否则复制出来跑不通）",
+            triage._q("a b.exe").startswith('"'), triage._q("a b.exe"))
+    _record("triage：普通路径不会被多包一层引号",
+            triage._q("demo.exe") == "demo.exe", triage._q("demo.exe"))
+
+
 def test_sigscan() -> None:
     print("\n[18] 签名扫描：被改过的加密常量 + 打包器识别")
     import struct as _s
@@ -754,6 +883,8 @@ def main() -> int:
     test_stego()
     test_emu()
     test_pe_emu()
+    test_crt_callbacks()
+    test_triage()
     test_sigscan()
     passed = sum(1 for _n, ok, _d in TEST_RESULTS if ok)
     total = len(TEST_RESULTS)

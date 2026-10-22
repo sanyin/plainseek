@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _paths import ensure_repo_on_path, sample      # noqa: E402
 
 ensure_repo_on_path()
-from dkit import fragments                          # noqa: E402
+from pseek import fragments                          # noqa: E402
 
 ROOT = str(sample("_投稿测试"))
 flags = {}

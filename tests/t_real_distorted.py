@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dkit import alphabets, oracles
+from pseek import alphabets, oracles
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _paths import sample                            # noqa: E402
 

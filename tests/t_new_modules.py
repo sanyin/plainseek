@@ -8,7 +8,7 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PIL import Image
 
-from dkit import baseN, carve, identify, langscore, xoranalysis
+from pseek import baseN, carve, identify, langscore, xoranalysis
 
 print("=" * 70)
 print("[1] 语言打分")

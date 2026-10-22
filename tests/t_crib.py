@@ -7,7 +7,7 @@ import tempfile
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dkit import pipeline
+from pseek import pipeline
 
 payload = b"\x00\x01\x02CRIB_SECRET_MARKER\x03\x04\x05" + os.urandom(32)
 data = base64.b64encode(zlib.compress(payload))

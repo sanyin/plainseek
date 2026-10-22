@@ -1,235 +1,161 @@
-# autocrypt — an all-in-one CTF decryption toolkit
+# plainseek
 
-> **Give it a directory, get plaintext back.** No hard-coded "per-challenge" keys: the tool
-> works out the alphabet itself, tries the cipher parameters itself, stacks layers itself, and
-> judges whether the result is actually right.
+**Seek the plaintext.** A decryption pipeline plus an evidence-first reverse-engineering workbench.
 
-[中文说明（完整版）](README.md) · [License: MIT](LICENSE)
+> It does **not** promise you a plaintext. It does two things:
+> automates what can be automated; turns what cannot into a **ranked, evidence-backed list of leads**.
 
-This is the English overview. The Chinese `README.md` is much longer and contains the full
-per-command walkthrough and the experiment log; everything essential is mirrored here.
+[中文](README.md) · [Command reference](docs/commands.md) · [Measured baseline](BENCHMARK.md) · [MIT](LICENSE)
 
 ---
 
-## 1. What it is good at
+## Two tiers — stated up front
 
-* **Layered encryption** — hex → reverse → zlib, base64 → AES-ECB, rot13 → XOR → gzip … the
-  chain search discovers the layers instead of you telling it.
-* **Shuffled alphabets** — a base64/custom-base table whose character order is randomised is
-  recovered from structural constraints (padding position, trailing bits, decoded-length
-  divisibility), not by brute force.
-* **Modified ciphers** — RC4 with a tweaked PRGA, DES with reversed bit-selection tables,
-  AES with one byte of the S-box changed: the signature scanner matches *near misses* and
-  reports what was altered.
-* **Key confirmation** — when the key is derived inside a program (MD5 of a 6-digit input and
-  so on), `--verify-binary` takes the ciphertext that lives in the binary, tries candidate keys
-  against it and keeps the one that produces structured output. It answers "what key is right",
-  not "what key looks plausible".
-* **Windows crackmes without running them** — a Unicorn-based emulator with ~300 Win32 API
-  stubs, fake system DLLs plus a PEB→Ldr chain, an execution trace disassembler, breakpoints
-  and an API stack ledger. The program is asked to judge its own input; the tool only reports
-  what the program itself printed.
-* **Packed samples** — `unpack` runs the UPX stub in the emulator and dumps the decompressed
-  image, so a packed crackme becomes a normal one. Works even when the sample is modified and
-  `upx -d` refuses it, and even when the file is locked by an antivirus (read it through a pipe).
+| Tier | Scope | What to expect |
+|---|---|---|
+| **A — fully automatic** | stacked encodings, scrambled alphabets, classical ciphers, structurally verifiable crypto (AES/DES/RC4…), flag-fragment stitching, `.pyc` constant recovery | one command, a plaintext plus an evidence level; **it usually delivers** |
+| **B — semi-automatic** | native RE: packers, custom VMs, GUI targets, C++ console, anti-debug | the tool gives **leads** (packer, runtime, crypto constants, verdict strings, input channel) and **the next command to run**; you make the call |
 
----
+The split is not a disclaimer — it is the tool's real boundary. The previous release lumped both tiers
+together under "one-stop"; **that was overselling, and it has been removed**.
 
-## 2. Install
+## Measured baseline
+
+Progress is judged on these three numbers (provenance in [BENCHMARK.md](BENCHMARK.md)):
+
+| Corpus | Result | Note |
+|---|---|---|
+| Self-made submission pack (12 layered/table challenges) | **2/12 truly solved** | another 3/12 reliably surface the author's *decoy* flags — reported as unverified |
+| 52pojie 2012 CrackMe batch (33 exes) | **18/33** candidate check routines located | that is *location*, not *solution* |
+| 52pojie 2026 Spring Festival (9 challenges) | **2 solved / 1 unpacked / 1 running** | solved: LÖVE game, MCP server; UPX+AES cracked open; a C++ console target now runs |
+
+Forum challenges **fully solved and self-verified**: KanXue 2019q2 #6, 52pojie Spring Festival 2021 #4,
+52pojie 2012CM (ying5567890). Every answer was confirmed by *the program accepting it* or by
+*recomputing the original algorithm*.
+
+## What it is good at
+
+* **Layers** — hex → reverse → zlib, base64 → AES-ECB, rot13 → XOR → gzip: the chain search discovers the depth itself.
+* **Scrambled alphabets** — recovered from structural constraints (padding position, trailing bits, decoded-length divisibility), not by enumeration.
+* **Modified algorithms** — an AES S-box with a few bytes changed, reversed DES selection tables, a replaced TEA delta: the signature scanner reports **near misses** and which bytes differ.
+* **Keys living inside a binary** — `--verify-binary` tries candidate keys against the ciphertext embedded in the program and answers "which key is right", not "which key looks right".
+* **Packing** — `unpack` runs the packer stub in the emulator and dumps the image, so modified UPX works too; samples locked by antivirus can be streamed through `-`.
+* **Letting the program judge itself** — `emu --run` / `gui --discover` use Unicorn with 300+ Win32 stubs and fake system DLLs plus a PEB→Ldr chain, then quote the program's own verdict strings.
+
+## What it does not do
+
+| Not supported | Why / what to use instead |
+|---|---|
+| .NET (IL) | IL is not parsed; the tool says so and points at dnSpy / ILSpy |
+| Android APK / web / pwn | Out of scope; points at jadx / a browser / pwndbg |
+| Non-UPX packers | Reports evidence (name, confidence) but does not force an unpack; suggests x64dbg + Scylla |
+| GUI message loops | Buttons are not simulated; the route is "call the check routine directly", limited to statically reachable verdicts |
+| Self-written packers needing a faithful loader environment | More API stubs do not help; the tool reports the wall instead of pretending to advance |
+
+## Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-| package | used for | if missing |
-|---|---|---|
-| `pycryptodome` | AES / DES / 3DES / RC4 / ChaCha20 / Salsa20 | standard-cipher path unavailable |
-| `numpy` | vectorised scanning (entropy, XOR-string decryption, bit planes) | related commands warn |
-| `Pillow` | image stego (BMP bit planes, spectrum plots), Huffman table comparison | image features degrade gracefully |
-| `unicorn` | CPU emulation (`emu`, `gui`, `crackme`, `unpack`) | dynamic analysis commands unavailable |
-| `capstone` | disassembly (trace decoding, instruction lengths) | dynamic analysis commands unavailable |
-| `keystone-engine` | assembling tiny test samples inside `selftest` | that selftest item is skipped |
+Pure stdlib still runs the encoding/classical half. `unicorn`/`capstone` gate dynamic analysis;
+`numpy`/`Pillow` gate scanning and stego. Python 3.8+ (tested on 3.13).
 
-Pure-stdlib `python autocrypt.py` still runs the classical-crypto and encoding half.
-Tests that need a private sample read `AUTOCRYPT_DATA`; without it they print one line and
-exit cleanly instead of dumping a stack trace.
+## Five minutes in
 
-Python 3.8+ (tested on 3.13).
-
----
-
-## 3. Quick start
+**Start by asking for directions** (this is what tells you whether the challenge is worth your time):
 
 ```bash
-# 1) look around first
-python autocrypt.py scan ./challenge
-
-# 2) the whole pipeline: detect → chain-search → verify → report
-python autocrypt.py auto ./challenge
-
-# 3) when the key lives inside a binary
-python autocrypt.py verify-binary app.exe --cipher-offset 0x3020
-
-# 4) a Windows crackme: let the program judge its own input
-python autocrypt.py emu crackme.exe --run --stdin "candidate-password"
-
-# 5) packed crackme: unpack in memory, then analyse
-python autocrypt.py unpack crackme.exe
-python autocrypt.py sig crackme.unpacked.bin
-
-# 6) sample is locked by an antivirus? stream it through stdin
-unrar p -p<password> pack.rar target.exe | python autocrypt.py unpack - --out target.bin
+python plainseek.py triage ./challenge.exe
 ```
 
-Every command accepts `--json` for machine-readable output.
+Output: identity (PE32 console) → packer (none / UPX / ?) → runtime (MSVC C++ / .NET / Go…) → input channel
+(stdin / GUI) → verdict strings → crypto constants → **tier verdict** → **ranked next commands**.
 
----
+**Tier A: just run it**
 
-## 4. Commands
+```bash
+python plainseek.py auto ./challenge_dir     # recon + chain search + judging
+python plainseek.py xor ./blob.bin           # blind XOR
+python plainseek.py basedecode ./str.txt     # recursive base decoding
+```
 
-| command | what it does |
+**Tier B: follow triage's plan**
+
+```bash
+python plainseek.py unpack cm.exe                      # unpack UPX first
+python plainseek.py sig cm.unpacked.bin                # which algorithm shows up
+python plainseek.py emu cm.exe --run --stdin "candidate"   # let the program judge
+python plainseek.py emu cm.exe --anchor "Correct" --break 0x401234
+```
+
+## Commands
+
+| Group | Commands |
 |---|---|
-| `scan` | reconnaissance: file type, entropy, encoding guesses, whether a plaintext/ciphertext pair exists |
-| `solve` | the one-shot pipeline over a directory |
-| `chain` | replay an explicit recipe (handy for verification and reuse) |
-| `pair` | analyse a plaintext/ciphertext pair → keystream or alphabet conclusions |
-| `table` | recover a shuffled character table |
-| `oracle` | score a file for "does this look like the real thing" |
-| `transforms` | list every available transform |
-| `identify` | what is this string: hash / token / credential / encoding … |
-| `xor` | multi-byte XOR: guess the key length, then the key |
-| `basedecode` | recursive base decoding (hex/base32/base64/base85/base91 …) |
-| `carve` | scan and carve embedded files (magic numbers, structural validation, archive suppression) |
-| `crack` | classical ciphers: Caesar, affine, Vigenère, monoalphabetic, rail fence |
-| `verify` | key confirmation against a known ciphertext |
-| `fragments` | collect and stitch flag fragments stored separately |
-| `pyc` | read Python bytecode: version, constants, disassembly, `--solve` |
-| `sig` | crypto-constant fingerprints (including modified constants), packer detection, entropy |
-| `gui` | GUI/CrackMe auto-judge: find candidate check routines and let the program decide |
-| `crackme` | static help: locate input and comparison sites, optional emulation |
-| `emu` | emulation forensics: run a function, see what memory it rewrites |
-| `unpack` | **UPX unpacking by emulation** (dumps a flat, analysable image) |
-| `stego` | BMP bit planes, WAV spectrum/audio decoding |
-| `formula` | derive a per-byte linear formula from a target byte and a known prefix |
-| `bulk` | batch: one candidate per line, auto-detected and decoded |
-| `auto` | file / folder / archive pipeline (recon, then solve) |
-| `selftest` | 52 synthetic checks over the whole pipeline |
+| Pipeline | `scan` `auto` `solve` `chain` `triage` |
+| Encoding / classical | `basedecode` `xor` `crack` `identify` `transforms` |
+| Structure / crypto | `table` `pair` `verify` `formula` `oracle` |
+| Files / stego | `carve` `stego` `fragments` `pyc` `bulk` |
+| Binary | `sig` `unpack` `crackme` `emu` `gui` |
+| Self-check | `selftest` (61 items, negative cases included) |
 
----
+Full reference: [docs/commands.md](docs/commands.md) (Chinese).
 
-## 5. How it decides (and why you can trust the output)
+## Evidence levels — the part worth reading
 
-Every conclusion carries an **evidence level**:
-
-| level | meaning |
+| Level | Meaning |
 |---|---|
-| 0 | text-level guess (something looks like text) |
-| 1 | shape/format valid (parses as JSON/PNG/…) |
-| 2 | heuristic (statistical, "looks like" a flag) |
-| 3 | round-trip (re-encrypting gives the original bytes back) |
+| 0 | text guess ("looks like text") |
+| 1 | shape/format valid (parses as JSON/PNG…) |
+| 2 | heuristic (statistically flag-like) |
+| 3 | round-trip (re-encrypting reproduces the ciphertext) |
 | 4 | oracle (a format validator accepts it) |
 | 5 | emulation (the program's own code accepted it) |
-| 6 | binary (the binary's own embedded ciphertext confirmed the key) |
+| 6 | binary self-proof (embedded ciphertext confirmed the key) |
 
-Decoys are common in reverse-engineering challenges: strings that look like a complete flag
-but are never compared. A candidate that only reached level 0–2 is reported as *unverified* and
-never presented as the answer. `--json` exposes the level on every candidate.
+**Anything stuck at 0–2 is reported as unverified and never presented as the answer.** Decoy flags that look
+complete but are never compared are far too common in RE challenges.
 
-Two habits that came out of real failures and are now enforced in the code:
+## Three principles (each one learned the hard way)
 
-* **Negative tests matter more than positive ones.** If a check routine is mis-identified, the
-  program prints "Correct!" for every input — a silently wrong answer. The selftest therefore
-  feeds a deliberately wrong input and requires the program to reject it.
-* **"Runs further" is the only real evidence.** Two early conclusions ("the TEB page is fine",
-  "dynamic API arity cannot be counted") were wrong; both were only caught by measuring
-  instruction counts instead of reasoning about the code.
+1. **Evidence gating** — a candidate must pass an independent verifier; dead ends stay dead ends.
+2. **Under-report rather than fish in noise** — multi-byte XOR string decryption is opt-in, packer signatures are conservative; a false hit is worse than a miss.
+3. **Write the trap into the comment** — the TEB page at address 0, stdcall arities, instruction lengths, junk bytes inside instructions, `enter` reporting a strange error inside a translation block: every non-obvious workaround here carries the failure that produced it.
 
----
+## Renamed
 
-## 6. Design principles
+Formerly `autocrypt`. It is not an "automatic crypt" — the old name oversold and set users up to hit the
+failure rate on their first try. It is now `plainseek` (seek the plaintext), with the A/B split on the front page
+and the measured baseline published.
 
-1. **Evidence gating.** Candidate answers must pass an independent verifier before being
-   finalised; dead ends stay dead ends.
-2. **Rather under-report than fish in noise.** Multi-byte XOR string decryption is opt-in and
-   flagged as "needs human confirmation"; packer signatures are conservative.
-3. **Write the trap into the comment.** Every non-obvious workaround in this codebase carries
-   the failure that produced it (TEB page at address 0, stdcall argument counts, instruction
-   lengths, junk bytes inside instructions, `enter` inside a translation block …).
-4. **Say what it cannot do.** .NET, APK and pwn are out of scope and the tool says so instead of
-   producing a plausible-looking wrong answer.
+* New entry points: `python plainseek.py ...`, `plainseek.bat`
+* Old ones still work: `python autocrypt.py ...`, `一条龙.bat` (both forward and print a rename notice)
 
----
+## Status and limitations
 
-## 7. Limitations
+* **61/61** self-checks pass, negative cases included (a wrong input must be judged wrong). CI runs on every push for Windows and Linux.
+* Windows is the main battlefield; on Linux the ELF/pure-algorithm half runs (marked *exploratory* in CI).
+* Emulation is stronger than static guessing and weaker than a real machine — the evidence level in the output says which one you are looking at.
+* C++ console targets need CRT initialisation (`_initterm`, `__p__acmdln`, `realloc`, `getc` are implemented), but targets that spawn real threads or depend on timing may still bail out early; the tool reports where.
 
-* **GUI message loops are not emulated.** The working route is "call the check routine directly
-  with a prepared buffer"; it covers the class where the verdict text is statically reachable.
-* **.NET / Android / pwn** are out of scope — the tool tells you to use dnSpy, jadx or pwndbg.
-* **Self-written packers** that depend on a faithful loader environment (module layout, their own
-  integrity data) are not solved by adding more API stubs; the tool reports the wall instead.
-* **Emulation is stronger than static guessing but weaker than real execution** — the evidence
-  level in the output always says which one you are looking at.
-* C++ console targets need CRT initialisation (`_initterm`, `__p__acmdln`, `realloc`,
-  `getc`/`ungetc`). These are implemented; targets that start extra threads or rely on real
-  timing may still bail out early, and the tool reports where.
-
----
-
-## 8. Layout
+## Layout
 
 ```
-autocrypt.py          entry point
-一条龙.bat            double-click launcher for Windows
-dkit/
-  oracles.py          format validators (is this decrypt right?)
-  alphabets.py        alphabet recovery
-  ciphers.py          cipher implementations, including modified variants
-  transforms.py       transform registry
-  recover.py          chain search
-  board.py            evidence-gated blackboard
-  emu.py              Unicorn emulation (PE/ELF), trace disassembly
-  winapi.py           ~300 Win32 API stubs
-  fakedll.py          fake system DLLs + PEB→Ldr chain
-  pe.py               PE parsing, function discovery, xrefs
-  unpack.py           UPX unpacking by emulation
-  sigscan.py          crypto constant fingerprints, packers, XOR strings
-  crackme.py          static crackme help
-  gui.py              GUI/CrackMe auto-judge
-  stego.py            BMP/WAV steganography
-  pyc.py              Python bytecode
-  formula.py          per-byte formula recovery
-  fragments.py        flag fragment stitching
-  verify.py           key confirmation
-  selftest.py         52 self-checks
-tests/                developer tests (private samples via AUTOCRYPT_DATA)
-examples/             template scripts for key derivation / emulation
+plainseek.py        entry point (autocrypt.py is a compatibility shim)
+plainseek.bat       Windows launcher (一条龙.bat is a compatibility shim)
+pseek/              implementation
+  triage.py         routing: recon + ranked next steps
+  unpack.py         in-memory UPX unpacking
+  emu.py winapi.py fakedll.py   Unicorn emulation + Win32 stubs + fake system DLLs
+  oracles.py alphabets.py ciphers.py transforms.py recover.py   tier-A core
+  board.py          evidence-gated blackboard
+  sigscan.py crackme.py gui.py stego.py pyc.py formula.py fragments.py verify.py
+tests/              developer tests (private samples via AUTOCRYPT_DATA; clean skip when missing)
+docs/commands.md    per-command reference
+.github/workflows/  CI: Windows gate + Linux exploratory + entry-point compatibility
 ```
 
----
+## License
 
-## 9. Real-world results
-
-Details and dead ends are documented in the Chinese `README.md` (section 五) and in
-`_卡点与已解出.md` in the parent working directory. Short version:
-
-* a base64 alphabet scrambled by a fake-UPX challenge: **recovered automatically**, three files
-  decrypted byte-for-byte;
-* an EasyLanguage binary with an MD5-derived key and reversed DES tables: key
-  **`732425` found automatically in ~46 s** by `--verify-binary`;
-* a KanXue 2019 CTF challenge (scrambled base64 + `strcmp`): solved, answer re-verified by
-  re-running the program itself;
-* a 52pojie Spring Festival challenge (`~ord(x)^prime`): solved, recomputed forward and compared
-  against the embedded `check[]`;
-* a 2012 crackme whose typed text is itself a tiny VM program: keygen written from the recovered
-  rule, verified in the emulator.
-
-2026 Spring Festival pack (in progress at the time of writing): UPX-packed crackme unpacked and
-identified as UPX + AES-128; a C++ console crackme went from *"aborts after 3312 instructions
-with no output"* to *"prints its banner, reads stdin, and returns a length hint"* after the CRT
-initialisation and stdio fixes.
-
----
-
-## 10. License
-
-MIT. See [LICENSE](LICENSE).
+MIT.
