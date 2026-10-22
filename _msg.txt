@@ -1,0 +1,43 @@
+新增 UPX 内存脱壳、C++ CRT 初始化支持、stdin 输入，以及英文 README
+
+## 新命令 unpack：内存里跑壳的 stub 再 dump
+
+- 不依赖 `upx -d`：先映射镜像，从入口跑 stub，**RIP 离开壳节**即视为 OEP
+  （`emu.run_function` 新增 `stop_outside` 参数）；
+- 有**解压密度自检**：第一次跳出壳节可能只是中间跳转，解压区还是空的，
+  这时自动重跑到指令上限再 dump；
+- dump 成"平铺镜像"（file offset == RVA）并归一化节名，`pe.PeImage.parse`
+  能重新读回来做自检，`scan`/`sig`/`crackme`/`emu` 都可以直接接着用；
+- 实测：吾爱 2026 春节之七 的 CM1.exe（x64 UPX）脱壳成功，命中 AES S 盒。
+
+## 所有读文件的命令支持 `-` 从 stdin 读
+
+杀软把样本锁住时（`open()` 直接 Access denied）可以走管道：
+
+    unrar p -p<pwd> pack.rar target.exe | python autocrypt.py unpack - --out target.bin
+
+实测：Kaspersky 会锁住落地的 crackme 及其同内容副本，管道流式读进内存后全程不用落盘。
+
+## C++ 控制台的 CRT 初始化（这类题以前一进 main 就 abort）
+
+- `_initterm` / `_initterm_e`：**真的去遍历静态构造器表并逐个调用**。
+  为此实现了"API 处理器反向调用 guest 函数"的机制（`_CallGuest` / `_ReturnToGuest`
+  信号 + resume 桩），否则 `std::cout`、locale 全是未初始化状态。
+- `__p__acmdln` / `__p__wcmdln` / `__p___argc` / `__p___argv` / `__p__environ`：
+  以前返回 0，CRT 解引用 NULL，172 条指令就 UC_ERR_MAP。
+- `realloc`（含分配大小记录与数据搬运）、`_onexit`、`SetUnhandledExceptionFilter`、
+  `CreateEventA`、`DuplicateHandle`、`CreateThread`、`_beginthreadex`：返回值必须"像成功"，
+  否则 CRT 直接 abort。
+- `getc` / `fgetc` / `getchar` / `ungetc` / `_read`：以前落到"未知 API 返回 0"，
+  `std::cin` 读到无尽的 0 字节，`getc/ungetc` 打成死循环。
+
+实测：吾爱 2026 春节之二 从"3312 条指令 abort、零输出"变成
+"完整打印 banner、读 stdin、给出长度提示"。
+
+## 文档
+
+- 新增英文版 `README.en.md`（能力、安装、命令表、证据分级、设计原则、局限、目录结构）；
+- 中文 README 顶部加入英文版链接，并补 `unpack`/stdin 与 CRT 初始化两节。
+
+自检仍为 52/52；看雪 2019q2 第六题、吾爱 2021 春节之四、吾爱 2012CM keygen、
+R07 四道回归全部通过。

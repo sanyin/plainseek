@@ -3,6 +3,8 @@
 > 目标：**给一个目录，尽量自动出明文**。不写死"某题某密钥"，而是
 > 让工具自己去认字符表、自己去试加密参数、自己去叠层、自己去判断解没解对。
 
+**English overview → [README.en.md](README.en.md)**（英文版：能力、安装、命令表、证据分级、局限）
+
 实测（详见下文「实测结果」）：
 
 | 场景 | 结果 |
@@ -214,7 +216,7 @@ python autocrypt.py auto <目标> --no-menu         # 关掉菜单（脚本里�
 python autocrypt.py selftest
 ```
 
-### 1) 侦察：这堆文件是什么？
+### 1.5) 侦察：这堆文件是什么？
 
 ```bash
 python autocrypt.py scan ./attachment
@@ -532,8 +534,51 @@ python autocrypt.py stego hint.wav --dump samples.raw   # 导出采样
 >    R13 的头部完全正确。"头部撒谎"这个**能力**仍然保留（`bmp_pixels` 会按像素数据长度
 >    反推宽高，自检里有对应用例），但不能拿这道题当例子。
 
-### 17) 模拟执行取证：把"跑一遍才知道的常量"挖出来（`emu`）
+### 17) 加壳与"文件被锁"：`unpack` 与 stdin 输入
 
+**加壳的逆向题**（尤其 UPX）以前只能靠人去脱。现在 `unpack` 直接**在模拟器里跑壳的 stub**，
+跑到解压完成、dump 出平铺镜像，接着 `scan`/`sig`/`crackme` 都能正常分析：
+
+```bash
+python autocrypt.py unpack CM1.exe                # → CM1.unpacked.bin
+python autocrypt.py sig    CM1.unpacked.bin       # → 命中 AES S 盒
+python autocrypt.py crackme CM1.unpacked.bin
+```
+
+三个实测要点，也是它比 `upx -d` 更耐用的地方：
+
+* **改过的 UPX 也能脱**：`upx -d` 遇到节名/入口被改会直接报 "not packed by UPX"，
+  这里是"跑一遍再 dump"，不依赖特征完全吻合；
+* **有解压密度自检**：第一次跳出壳节可能只是中间跳转（解压区还是空的），
+  工具会量一下非零密度，太稀就重跑到指令上限再 dump；
+* **文件被杀软锁住也能分析**：所有读文件的命令都支持 `-` 表示从 stdin 读：
+
+```bash
+unrar p -p<pwd> pack.rar CM1.exe | python autocrypt.py unpack - --out CM1.bin
+```
+
+（实测吾爱 2026 春节之七：Kaspersky 把落地成 `.exe`/`.bin` 的样本全锁住，`open()` 直接
+Access denied；改走管道流式读进内存后一路通到底，脱壳 + 认出 AES-128。
+
+### 17.5) C++ 控制台题的 CRT 初始化（`_initterm` / `__p__acmdln` / `realloc` / `getc`）
+
+C++ 写的控制台 CrackMe 以前跑不起来：一进 `main` 就 `abort()`，**一行输出都没有**。
+根因全在 CRT 初始化，现在这几处都补上了：
+
+| 补的东西 | 不补会怎样 |
+|---|---|
+| `_initterm` / `_initterm_e` | 静态构造器表不遍历 → `std::cout`、locale 全是未初始化状态 → 抛异常 abort |
+| `__p__acmdln` / `__p___argc` / `__p___argv` / `__p__environ` | 返回 0 → CRT 解引用 NULL，172 条指令就崩 |
+| `realloc` | 返回 0 被当成"内存分配失败" → 直接 abort |
+| `CreateEventA` / `DuplicateHandle` / `CreateSemaphoreA` / atom 一族 | 返回 0 被当成失败 → CRT 的 locale/线程库放弃 → abort |
+| `getc` / `fgetc` / `ungetc` / `_read` | 未知 API 返回 0，`std::cin` 读到无尽的 0 字节，`getc/ungetc` 打成死循环 |
+
+其中 `_initterm` 的实现需要"**API 处理器反过来调用 guest 函数**"：CRT 的语义就是
+"逐个调用表里的函数指针"。工具里用一个 `_CallGuest` 信号把控制权交回模拟循环，
+压一个"返回即 resume 桩"的帧，跑完一个接着下一个。实测效果：吾爱 2026 春节之二
+从"3312 条指令 abort、零输出"变成"完整打印 banner、读 stdin、给出长度提示"。
+
+### 18) 模拟执行取证：把"跑一遍才知道的常量"挖出来（`emu`）
 有一大类逆向题，答案**不在文件里，而在程序跑起来之后**：
 
 * 解密用的表是运行时用 LCG + Fisher-Yates 生成的（二进制里根本没有这张表）；
@@ -586,7 +631,7 @@ python autocrypt.py emu ./R03_xor --call 0x401930 --dump 0x4c8320:36 --dump-to o
 * Unicorn 在 `PC == until` 时**执行前**就停，钩子不一定触发 → 返回值要靠
   "RIP 是否落在哨兵上 / RSP 是否已回弹"补判断。
 
-### 18) 让 Windows 逆向题"自己判对错"：PE 解析 + 导入表打桩（`emu --run`）
+### 19) 让 Windows 逆向题"自己判对错"：PE 解析 + 导入表打桩（`emu --run`）
 
 吾爱破解/看雪上的 CrackMe **绝大多数是 Windows PE**，所以 17 节那套 ELF 取证不够用。
 现在 `emu` 同时吃 PE 与 ELF，PE 侧做的事情是：
@@ -645,7 +690,7 @@ for addr, mnem, ops in emu.trace_disasm(img, res["coverage"]):
 而轨迹反汇编把那段循环清清楚楚解了出来；再配合**崩溃时的寄存器现场**（`fault_regs`），
 一眼就看出"壳读过假 DLL 的末尾了"（`edx=0x71010005`）。
 
-### 19) CrackMe 静态辅助（`crackme`）
+### 20) CrackMe 静态辅助（`crackme`）
 
 GUI 程序（Qt/MFC/Delphi）的校验发生在"点按钮"之后，把窗口消息循环也模拟出来不现实
 （Speakeasy 那类专业框架也做不好），所以这类题必须走静态。`crackme` 命令给的就是静态那一条路：
@@ -665,7 +710,7 @@ python autocrypt.py crackme 题目.exe --run --stdin 候选   # 顺手把控制�
 * **运行库噪声过滤**：`runtime error`/`TLOSS`/`GetLastError`/`combobox`/`ime` 这类
   CRT/MFC 内部字符串一律过滤（否则"比较点"列表里全是 MFC 自己的逻辑）。
 
-### 20) 加密常量指纹（含"被改过的常量"）+ 打包器识别（`sig`）
+### 21) 加密常量指纹（含"被改过的常量"）+ 打包器识别（`sig`）
 
 逆向题最常见的套路是**标准算法 + 改常量**：TEA 的 delta 换成别的数、AES 的 S 盒动几个字节、
 MD5 的初值被改。人眼很难发现，机器可以——这就是 findcrypt / Detect It Easy 那一类工具的核心。
@@ -711,7 +756,7 @@ UTF-16 串异或后会变成"每隔一个字符是空格"的锯齿；常量填�
 而错误密钥凑出来的"可打印垃圾"（`'suc;es+uc;es…'`）连词表都能蒙过。
 **宁可少报也不要让人在噪声里捞针。**
 
-### 21) 证据门控：把"找到 flag"和"确认 flag"分开（借鉴看雪 r0re）
+### 22) 证据门控：把"找到 flag"和"确认 flag"分开（借鉴看雪 r0re）
 
 这条是纯"工程约束"，但可能是这一轮最有价值的一条。看雪那篇《r0re 自动逆向分析工具实战记录》
 （<https://bbs.kanxue.com/thread-292470.htm>）里最值得抄的不是某个算法，而是**完成门控**：

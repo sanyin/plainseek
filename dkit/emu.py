@@ -338,7 +338,9 @@ def run_function(img, addr: int, args: Sequence[int] = (),
                  api: bool = True, tail_len: int = 24,
                  stop_at: Sequence[int] = (), coverage: bool = False,
                  pre_write: Sequence[Tuple[int, bytes]] = (),
-                 api_setup=None) -> Dict[str, object]:
+                 api_setup=None,
+                 stop_outside: Optional[Tuple[int, int]] = None
+                 ) -> Dict[str, object]:
     """模拟执行 ``addr`` 处的函数（ELF x86-64 与 PE x86/x64 都支持）。
 
     * 按段/节铺内存（权限照抄），额外给一块栈；
@@ -576,10 +578,51 @@ def run_function(img, addr: int, args: Sequence[int] = (),
                 if name == "_ExitRequested":
                     state["exit"] = getattr(exc, "code", 0)
                     state["stop"] = f"程序主动退出（exit code {state['exit']}）"
+                elif name == "_CallGuest":
+                    # API 要回调 guest 函数（`_initterm` 走静态构造器表就是这样）：
+                    # 压一个"返回即 resume 桩"的帧，然后把 RIP 指过去。
+                    target = int(getattr(exc, "target", 0))
+                    if not target:
+                        state["stop"] = "API 请求回调，但没给目标地址"
+                        state["done"] = True
+                        uc_.emu_stop()
+                        return
+                    from unicorn import x86_const as xc
+                    sp = api_emu._sp()
+                    word = 8 if api_emu.bits == 64 else 4
+                    stub = api_emu._resume()
+                    sp -= word
+                    api_emu.uc.mem_write(sp, stub.to_bytes(word, "little"))
+                    api_emu._set_sp(sp)
+                    if api_emu.bits == 64:
+                        uc_.reg_write(xc.UC_X86_REG_RIP, target)
+                    else:
+                        uc_.reg_write(xc.UC_X86_REG_EIP, target)
+                    return
+                elif name == "_ReturnToGuest":
+                    # 栈已调好，直接回跳（_initterm 收尾用）
+                    target = int(getattr(exc, "target", 0))
+                    from unicorn import x86_const as xc
+                    if api_emu.bits == 64:
+                        uc_.reg_write(xc.UC_X86_REG_RIP, target)
+                    else:
+                        uc_.reg_write(xc.UC_X86_REG_EIP, target)
+                    return
                 else:
                     state["stop"] = f"API 模拟异常：{exc}"
                 state["done"] = True
                 uc_.emu_stop()
+            return
+        if stop_outside is not None and not (stop_outside[0] <= address < stop_outside[1]):
+            # **脱离某段就停**：脱壳用——壳的 stub 全在某个节里，一旦 RIP 离开它，
+            # 说明已经跳到解压后的代码（那就是 OEP）。
+            # ⚠ 必须放在**API 桩分发之后**：壳会调 VirtualAlloc/VirtualProtect 等，
+            # 那些调用会跳到 0x1000xxxx 的桩页（不在壳节里），放在前面就会误判成 OEP
+            # ——实测第一次就是这样，OEP 被认成了 0x10000010。
+            state["oep"] = address
+            state["stop"] = f"RIP 离开指定区间（0x{address:x}），视作 OEP"
+            state["done"] = True
+            uc_.emu_stop()
             return
         if address == sentinel:
             state["stop"] = "函数返回"
@@ -724,6 +767,7 @@ def run_function(img, addr: int, args: Sequence[int] = (),
             "new_regions": new_regions,
             "tail": list(state["tail"]), "hit": state["hit"], "regs": regs,
             "null_call": state.get("null_call"), "teb_note": teb_note,
+            "oep": state.get("oep"),
             "coverage": visited if visited is not None else set(),
             "comparisons": list(api_emu.comparisons) if api_emu else [],
             "stdout": api_emu.stdout() if api_emu else "",

@@ -155,6 +155,29 @@ class _ExitRequested(Exception):
         self.code = code
 
 
+class _CallGuest(Exception):
+    """内部信号：交给代码钩子"**去调用一个 guest 函数**"，返回时回到 resume 桩。
+
+    为什么需要：`_initterm(start, end)` 是 MSVC CRT 的**静态构造函数表遍历器**，
+    它的语义就是"逐个调用表里的函数指针"。API 处理器只能返回一个值，
+    没法自己发起一次 guest 调用——所以用异常把控制权交回给模拟循环。
+    不实现它的后果：`std::cout`/locale 这些 C++ 静态对象都没被构造，
+    C++ 控制台题一进 main 就抛异常 abort（实测吾爱 2026 春节之二：3312 条指令后 abort）。
+    """
+
+    def __init__(self, target: int):
+        super().__init__(target)
+        self.target = target
+
+
+class _ReturnToGuest(Exception):
+    """内部信号：栈已由调用方调好，直接把 RIP 设到 target 继续。"""
+
+    def __init__(self, target: int):
+        super().__init__(target)
+        self.target = target
+
+
 #: CRT(msvcrt) 侧会出现在导出表里的名字 —— 造"假 msvcrt"时按这份名单建导出目录。
 #: 壳/loader 自己解析导出表时，能从这里拿到它想要的 CRT 函数地址。
 CRT_EXPORT_NAMES = (
@@ -642,6 +665,10 @@ class ApiEmulator:
                 value, used = self._api_unknown(name), nargs
         except _ExitRequested:
             raise
+        except (_CallGuest, _ReturnToGuest):
+            # 这两个是"请把控制权交回模拟循环"的内部信号，不是错误，必须放行
+            # （否则 _initterm 会被当成"模拟出错、返回 0"，静态构造器一个都不跑）
+            raise
         except Exception as exc:                     # API 实现里的 bug 不该让整场模拟失败
             self.note(f"{name} 模拟出错（按返回 0 处理）：{exc}")
             value, used = 0, nargs
@@ -768,9 +795,37 @@ class ApiEmulator:
     def _api_atol(self) -> Tuple[int, int]:
         return self._api_atoi()
 
+    def _track_alloc(self, addr: int, size: int) -> int:
+        """记住这块内存的申请大小（realloc 要按旧长度搬数据）。"""
+        table = getattr(self, "_alloc_sizes", None)
+        if table is None:
+            table = self._alloc_sizes = {}
+        table[addr] = max(16, size)
+        return addr
+
     def _api_malloc(self) -> Tuple[int, int]:
         (size,) = self.args(1)
-        return self._heap(max(16, size)), 1
+        return self._track_alloc(self._heap(max(16, size)), size), 1
+
+    def _api_realloc(self) -> Tuple[int, int]:
+        """`realloc(ptr, size)` —— **CRT 分配器的核心**。
+
+        之前没实现就返回 0，CRT 会当成"内存分配失败"，
+        紧接着 `abort()`（实测吾爱 2026 春节之二：3312 条指令后 abort，
+        前面只差 realloc/CreateEventA/DuplicateHandle 这几个）。
+        """
+        ptr, size = self.args(2)
+        size = max(16, size)
+        if not ptr:
+            return self._track_alloc(self._heap(size), size), 2
+        old = getattr(self, "_alloc_sizes", {}).get(ptr, size)
+        addr = self._heap(size)
+        try:
+            self.uc.mem_write(addr, bytes(self.uc.mem_read(ptr, min(old, size))))
+        except Exception:
+            pass
+        self._track_alloc(addr, size)
+        return addr, 2
 
     def _api_calloc(self) -> Tuple[int, int]:
         count, size = self.args(2)
@@ -963,6 +1018,201 @@ class ApiEmulator:
             self.uc.mem_write(self._iob_addr + i * 0x60 + 0x18,
                               struct.pack("<I", 0x40))
         return self._iob_addr
+
+    # ---- atom / semaphore / last-error：C++ iostream 与 locale 初始化会用到 ----
+    def _api_AddAtomA(self) -> Tuple[int, int]:
+        (ptr,) = self.args(1)
+        text = self.read_cstr(ptr)
+        table = getattr(self, "_atoms", None)
+        if table is None:
+            table = self._atoms = {}
+        atom = table.get(text) or (len(table) + 0x4001)
+        table[text] = atom
+        return atom, 1
+
+    def _api_FindAtomA(self) -> Tuple[int, int]:
+        (ptr,) = self.args(1)
+        text = self.read_cstr(ptr)
+        return (getattr(self, "_atoms", {}) or {}).get(text, 0), 1
+
+    def _api_DeleteAtomA(self) -> Tuple[int, int]:
+        return 0, 2
+
+    def _api_SetUnhandledExceptionFilter(self) -> Tuple[int, int]:
+        # 设置顶层异常过滤器：返回 0（表示"之前没设过"）即可
+        return 0, 1
+
+    def _api__onexit(self) -> Tuple[int, int]:
+        """`_onexit(fn)` 注册退出回调。真去回调太复杂，返回非零表示"注册成功"。"""
+        (fn,) = self.args(1)
+        funcs = getattr(self, "_onexit_funcs", None)
+        if funcs is None:
+            funcs = self._onexit_funcs = []
+        if fn:
+            funcs.append(fn)
+        return (fn or 1), 1
+
+    def _api_CreateEventA(self) -> Tuple[int, int]:
+        # 句柄只要非零即可；同步逻辑在模拟里不会真的等
+        return 0x1C4, 4
+
+    def _api_DuplicateHandle(self) -> Tuple[int, int]:
+        """`DuplicateHandle(hProcess, hSource, hTargetProcess, lpTarget, ...)`。
+
+        返回值是 BOOL：**必须非零**，否则 CRT/线程库会当失败直接 abort。
+        """
+        args = self.args(7)
+        if len(args) >= 4 and args[3]:
+            try:
+                self.uc.mem_write(args[3], struct.pack("<I" if self.bits == 32 else "<Q",
+                                                       0x1C8))
+            except Exception:
+                pass
+        return 1, 7
+
+    def _api_CloseHandle(self) -> Tuple[int, int]:
+        return 1, 1
+
+    def _api__beginthreadex(self) -> Tuple[int, int]:
+        # 不真的起线程：返回一个"看起来成功"的句柄，避免 CRT 认为线程创建失败
+        args = self.args(6)
+        if len(args) >= 6 and args[5]:
+            try:
+                self.uc.mem_write(args[5], struct.pack("<I", 0x1CC))
+            except Exception:
+                pass
+        return 0x1CC, 6
+
+    def _api_CreateThread(self) -> Tuple[int, int]:
+        return 0x1D0, 6
+
+    def _api_CreateSemaphoreA(self) -> Tuple[int, int]:
+        return 0x1C0, 4
+
+    def _api_ReleaseSemaphore(self) -> Tuple[int, int]:
+        return 1, 3
+
+    def _api_WaitForSingleObject(self) -> Tuple[int, int]:
+        # WAIT_OBJECT_0：模拟环境里"句柄永远就绪"，免得程序卡在等待里
+        return 0, 2
+
+    def _api_GetLastError(self) -> Tuple[int, int]:
+        return getattr(self, "last_error", 0), 0
+
+    # ---- 静态构造器表：_initterm / _initterm_e（C++ 题的必经之路）----
+    def _resume(self) -> int:
+        """resume 桩的地址（第一次用到时分配并登记）。"""
+        addr = getattr(self, "_resume_stub", 0)
+        if not addr:
+            addr = self._resume_stub = self.next_stub("__initterm_resume__")
+        return addr
+
+    def _api__initterm(self) -> Tuple[int, int]:
+        return self._initterm_impl()
+
+    def _api__initterm_e(self) -> Tuple[int, int]:
+        # _initterm_e 的语义一样，只是遇错返回非零；这里按成功处理
+        return self._initterm_impl()
+
+    def _initterm_impl(self) -> Tuple[int, int]:
+        start, end = self.args(2)
+        word = 8 if self.bits == 64 else 4
+        fmt = "<Q" if self.bits == 64 else "<I"
+        pending: List[int] = []
+        addr = start
+        while addr + word <= end:
+            try:
+                fn = struct.unpack(fmt, self.uc.mem_read(addr, word))[0]
+            except Exception:
+                break
+            if fn:
+                pending.append(fn)
+            addr += word
+        if not pending:
+            return 0, 2
+        sp = self._sp()
+        try:
+            ret = struct.unpack(fmt, self.uc.mem_read(sp, word))[0]
+        except Exception:
+            ret = 0
+        # 上下文：剩下要调的函数、_initterm 自己的返回地址、入口处的 SP
+        self._initterm_pending = pending
+        self._initterm_ret = ret
+        self._initterm_sp = sp
+        raise _CallGuest(self._resume())
+
+    def _api___initterm_resume__(self) -> Tuple[int, int]:
+        """每次某个静态构造器返回时都会到这里：接着调下一个，全部完成则返回调用方。"""
+        pending = getattr(self, "_initterm_pending", None) or []
+        if pending:
+            raise _CallGuest(pending.pop(0))
+        sp = getattr(self, "_initterm_sp", 0)
+        ret = getattr(self, "_initterm_ret", 0)
+        # cdecl：参数由调用方清；我们只需跳过"给 resume 桩用的那个返回地址槽"
+        self._set_sp(sp + (8 if self.bits == 64 else 4))
+        raise _ReturnToGuest(ret)
+
+    def _api___p__acmdln(self) -> Tuple[int, int]:
+        """返回"**指向命令行字符串的指针** 的地址"（不是字符串本身）。
+
+
+        `__p__acmdln()` 返回 `char**`，CRT 的 `__getmainargs` 会 `*p` 拿出命令行再拆 argv。
+        以前没实现就返回 0，CRT 拿到 NULL 立刻解引用 → 空指针崩（实测吾爱 2026 春节之二：
+        172 条指令就 UC_ERR_MAP）。这一族（acmdln/wcmdln/argc/argv/environ）是
+        **MSVC 控制台程序 CRT 初始化的必经之路**，缺一个就根本进不到 main。
+        """
+        return self._cmdline_slot(), 0
+
+    def _api___p__wcmdln(self) -> Tuple[int, int]:
+        return self._cmdline_slot(wide=True), 0
+
+    def _cmdline_slot(self, wide: bool = False) -> int:
+        """铺一块"命令行字符串 + 指向它的指针"，返回指针槽的地址（幂等）。"""
+        key = "_cmdline_wide" if wide else "_cmdline_ansi"
+        cached = getattr(self, key, 0)
+        if cached:
+            return cached
+        text = " ".join(self.argv) if getattr(self, "argv", None) else "prog.exe"
+        raw = (text + "\x00")
+        data = (raw.encode("utf-16-le") if wide else raw.encode("latin-1", "replace"))
+        buf = self._heap(len(data) + 8)
+        self.uc.mem_write(buf, data)
+        slot = self._heap(8)
+        self.uc.mem_write(slot, struct.pack("<I" if self.bits == 32 else "<Q", buf))
+        setattr(self, key, slot)
+        return slot
+
+    def _api___p___argc(self) -> Tuple[int, int]:
+        slot = getattr(self, "_argc_slot", 0)
+        if not slot:
+            slot = self._argc_slot = self._heap(8)
+            self.uc.mem_write(slot, struct.pack("<I" if self.bits == 32 else "<Q",
+                                                max(1, len(getattr(self, "argv", []) or []))))
+        return slot, 0
+
+    def _api___p___argv(self) -> Tuple[int, int]:
+        slot = getattr(self, "_argv_slot", 0)
+        if not slot:
+            argv = list(getattr(self, "argv", []) or ["prog.exe"])
+            slot = self._argv_slot = self._heap(8 * (len(argv) + 1))
+            ptrs = []
+            for item in argv:
+                buf = self._heap(len(item) + 1)
+                self.uc.mem_write(buf, item.encode("latin-1", "replace") + b"\x00")
+                ptrs.append(buf)
+            for i, ptr in enumerate(ptrs):
+                fmt = "<I" if self.bits == 32 else "<Q"
+                self.uc.mem_write(slot + i * (4 if self.bits == 32 else 8),
+                                  struct.pack(fmt, ptr))
+        return slot, 0
+
+    def _api___p__environ(self) -> Tuple[int, int]:
+        # 空环境块：一个 NULL 指针即可（CRT 只遍历，不会崩）
+        slot = getattr(self, "_environ_slot", 0)
+        if not slot:
+            slot = self._environ_slot = self._heap(16)
+            self.uc.mem_write(slot, b"\x00" * 16)
+        return slot, 0
 
     def _api___iob_func(self) -> Tuple[int, int]:
         return self._iob(), 0
@@ -1462,6 +1712,48 @@ class ApiEmulator:
         if written:
             self.uc.mem_write(written, struct.pack("<I", count))
         return 1, 5
+
+    def _stdin_byte(self) -> int:
+        """从喂进去的 stdin 取一个字节；没有了返回 -1（EOF）。"""
+        if self.stdin_pos < len(self.stdin):
+            byte = self.stdin[self.stdin_pos]
+            self.stdin_pos += 1
+            return byte
+        return -1
+
+    def _api_getc(self) -> Tuple[int, int]:
+        return self._stdin_byte(), 1
+
+    def _api_fgetc(self) -> Tuple[int, int]:
+        return self._stdin_byte(), 1
+
+    def _api__getc(self) -> Tuple[int, int]:
+        return self._stdin_byte(), 1
+
+    def _api_getchar(self) -> Tuple[int, int]:
+        return self._stdin_byte(), 0
+
+    def _api_ungetc(self) -> Tuple[int, int]:
+        """`ungetc(c, FILE*)`：把刚读的字节退回去。
+
+        必须实现：MSVC 的 `std::cin >> string` / `getline` 内部会
+        `getc` 读一个、`ungetc` 退一个来探测分隔符。以前 `getc` 落到
+        "未知 API 返回 0"，程序看到的是无尽的 0 字节，getc/ungetc 打成死循环
+        （实测吾爱 2026 春节之二：40 万条指令还在 getc/ungetc 打转，
+        补上这两个之后立刻就打印出 banner 并开始等密码）。
+        """
+        ch, _stream = self.args(2)
+        if ch != -1 and self.stdin_pos > 0:
+            self.stdin_pos -= 1
+        return ch & 0xFF, 2
+
+    def _api__read(self) -> Tuple[int, int]:
+        _fd, buf, count = self.args(3)
+        data = self.stdin[self.stdin_pos:self.stdin_pos + count]
+        self.stdin_pos += len(data)
+        if data:
+            self.uc.mem_write(buf, data)
+        return len(data), 3
 
     def _api_ReadFile(self) -> Tuple[int, int]:
         _h, buf, count, read_ptr, _ov = self.args(5)

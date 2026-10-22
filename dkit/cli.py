@@ -245,6 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-ins", type=int, default=200000)
     s.set_defaults(func=cmd_gui)
 
+    s = sub.add_parser("unpack", help="UPX 自动脱壳：内存里跑壳的 stub，dump 出可分析的镜像")
+    s.add_argument("file", help="要脱壳的文件；写 - 表示从 stdin 读（杀软锁文件时用管道）")
+    s.add_argument("--out", help="输出路径（默认 <原名>.unpacked.bin）")
+    s.add_argument("--max-ins", type=int, default=4000000)
+    s.set_defaults(func=cmd_unpack)
+
     s = sub.add_parser("crackme", help="CrackMe 辅助：静态定位比较点/输入点 + 可选模拟执行")
     s.add_argument("file")
     s.add_argument("--run", action="store_true", help="顺便把程序模拟执行跑一遍")
@@ -1000,6 +1006,42 @@ def cmd_formula(args) -> int:
     return 0
 
 
+def _read_blob(path: str) -> bytes:
+    """读输入文件；``-`` 表示**从 stdin 读**。
+
+    为什么要支持 stdin：遇到杀软把样本锁住（`open()` 直接 Access denied）时，
+    `unrar p 样本.rar 样本.exe | autocrypt unpack -` 这种"流式读进内存"是唯一可行路径。
+    """
+    if path in ("-", "/dev/stdin"):
+        import sys
+        return sys.stdin.buffer.read()
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def cmd_unpack(args) -> int:
+    """UPX 自动脱壳（在内存里跑壳的 stub，dump 出平铺镜像）。"""
+    from . import unpack as _unpack
+    blob = _read_blob(args.file)
+    print(f"输入：{len(blob)} 字节")
+    flat, oep, notes = _unpack.unpack_in_memory(blob, max_ins=args.max_ins)
+    for note in notes:
+        print(f"  · {note}")
+    if not flat:
+        print("\n脱壳失败——原因见上面的说明（不是所有壳都能靠模拟执行脱掉）")
+        return 1
+    out = args.out
+    if not out:
+        import os
+        base = args.file if args.file not in ("-", "/dev/stdin") else "stdin"
+        out = os.path.splitext(base)[0] + ".unpacked.bin"
+    with open(out, "wb") as fh:
+        fh.write(flat)
+    print(f"\n已写出：{out}（{len(flat)} 字节，入口 0x{oep:x}）")
+    print("下一步可以：scan / sig / crackme / emu 直接对这个文件跑")
+    return 0
+
+
 def cmd_gui(args) -> int:
     """GUI/CrackMe 的"自动判定"辅助：找候选校验入口，并试着让程序自己判对错。"""
     from . import emu as _emu, gui as _gui
@@ -1514,7 +1556,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "carve": cmd_carve, "crack": cmd_crack, "bulk": cmd_bulk, "verify": cmd_verify,
         "fragments": cmd_fragments, "auto": cmd_auto, "pyc": cmd_pyc,
         "formula": cmd_formula, "stego": cmd_stego, "emu": cmd_emu,
-        "crackme": cmd_crackme, "sig": cmd_sig, "gui": cmd_gui,
+        "crackme": cmd_crackme, "sig": cmd_sig, "gui": cmd_gui, "unpack": cmd_unpack,
         "selftest": cmd_selftest,
     }[args.cmd]
     return handler(args)
