@@ -1,5 +1,7 @@
 # plainseek
 
+[![selftest](https://github.com/sanyin/plainseek/actions/workflows/selftest.yml/badge.svg)](https://github.com/sanyin/plainseek/actions/workflows/selftest.yml)
+
 **寻明文。** 一条解密流水线 + 一个带证据的逆向工作台。
 
 > 它**不保证**给出明文。它做的是两件事：

@@ -1,5 +1,7 @@
 # plainseek
 
+[![selftest](https://github.com/sanyin/plainseek/actions/workflows/selftest.yml/badge.svg)](https://github.com/sanyin/plainseek/actions/workflows/selftest.yml)
+
 **Seek the plaintext.** A decryption pipeline plus an evidence-first reverse-engineering workbench.
 
 > It does **not** promise you a plaintext. It does two things:
