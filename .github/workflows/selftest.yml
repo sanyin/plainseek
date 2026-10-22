@@ -3,9 +3,9 @@ name: selftest
 # 目的只有一个：**每次提交都证明"核心能力没退化"**。
 # 这个项目有 61 条自检（含负样本：喂错误输入必须被判错），比任何"我加了个功能"的说法都可信。
 #
-# 说明：Windows 任务是**门槛**；Linux 任务先标成"探索性"（continue-on-error），
-# 因为工具的主战场是 Win32 模拟执行，Linux 上跑通 ELF 那部分是加分项而不是前提。
-# 等 Linux 连续几次绿了，把 continue-on-error 去掉即可。
+# 两个平台都是门槛：首轮 CI（commit ff5cf30 / 416f5eb）里
+# windows-latest 3.10/3.13 与 ubuntu-latest 3.10/3.12 全部 success，
+# 所以 Linux 不再是"探索性"，一并作为必须通过的检查。
 
 on:
   push:
@@ -34,9 +34,8 @@ jobs:
         run: python plainseek.py selftest
 
   selftest-linux:
-    name: selftest (ubuntu, py${{ matrix.python }}) [探索性]
+    name: selftest (ubuntu, py${{ matrix.python }})
     runs-on: ubuntu-latest
-    continue-on-error: true          # 见文件头说明：先观察，绿了再转正式门槛
     strategy:
       fail-fast: false
       matrix:

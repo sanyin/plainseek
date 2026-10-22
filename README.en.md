@@ -134,8 +134,9 @@ and the measured baseline published.
 
 ## Status and limitations
 
-* **61/61** self-checks pass, negative cases included (a wrong input must be judged wrong). CI runs on every push for Windows and Linux.
-* Windows is the main battlefield; on Linux the ELF/pure-algorithm half runs (marked *exploratory* in CI).
+* **61/61** self-checks pass, negative cases included (a wrong input must be judged wrong).
+  CI runs on every push on **Windows 3.10/3.13 and Linux 3.10/3.12**, both required (first run fully green).
+* Windows is the main battlefield; on Linux the ELF/pure-algorithm half runs.
 * Emulation is stronger than static guessing and weaker than a real machine — the evidence level in the output says which one you are looking at.
 * C++ console targets need CRT initialisation (`_initterm`, `__p__acmdln`, `realloc`, `getc` are implemented), but targets that spawn real threads or depend on timing may still bail out early; the tool reports where.
 
@@ -153,7 +154,7 @@ pseek/              implementation
   sigscan.py crackme.py gui.py stego.py pyc.py formula.py fragments.py verify.py
 tests/              developer tests (private samples via AUTOCRYPT_DATA; clean skip when missing)
 docs/commands.md    per-command reference
-.github/workflows/  CI: Windows gate + Linux exploratory + entry-point compatibility
+.github/workflows/  CI: Windows + Linux gates + entry-point compatibility
 ```
 
 ## License

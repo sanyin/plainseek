@@ -130,8 +130,9 @@ python plainseek.py emu cm.exe --anchor "Correct" --break 0x401234
 
 ## 状态与局限
 
-* 自检 **61/61** 通过（含负样本：喂错误输入必须被判错）。CI 在每次提交跑 Windows 与 Linux 两套；
-* Windows 是主战场，Linux 上跑的是 ELF / 纯算法那部分（CI 里先标"探索性"）；
+* 自检 **61/61** 通过（含负样本：喂错误输入必须被判错）。
+  CI 每次提交跑 **Windows 3.10/3.13 + Linux 3.10/3.12**，两个平台都是门槛（首轮 CI 已全绿）；
+* Windows 是主战场，Linux 上跑的是 ELF / 纯算法那部分；
 * 模拟执行强于静态猜测、弱于真机；输出里的证据等级始终标着这一点；
 * C++ 控制台题需要 CRT 初始化（`_initterm` / `__p__acmdln` / `realloc` / `getc` 已实现），
   但**起真线程或依赖真实时序**的程序仍可能提前退出，工具会报告在哪一步。
@@ -150,7 +151,7 @@ pseek/              实现
   sigscan.py crackme.py gui.py stego.py pyc.py formula.py fragments.py verify.py
 tests/              开发测试（私有样本走 AUTOCRYPT_DATA，缺样本会打印一行原因后跳过）
 docs/commands.md    逐命令详解
-.github/workflows/  CI：Windows 门槛 + Linux 探索 + 入口兼容检查
+.github/workflows/  CI：Windows + Linux 双门槛 + 入口兼容检查
 ```
 
 ## 许可
